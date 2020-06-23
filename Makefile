@@ -4,4 +4,4 @@ CFLAGS=-g
 watchdog:	watchdog.o
 
 clean:
-	rm *.o watchdog
+	rm -f *.o watchdog
