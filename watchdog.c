@@ -33,6 +33,7 @@
 #define WDT_EFER (wdt_io+0)	/* Extended Function Enable Registers */
 #define WDT_EFIR (wdt_io+0)	/* Extended Function Index Register (same as EFER) */
 #define WDT_EFDR (WDT_EFIR+1)	/* Extended Function Data Register */
+#define IOPORT_DELAY 300000
 
 struct watchdog_device {
     unsigned int timeout;
@@ -47,7 +48,7 @@ static struct watchdog_device wdt_dev = {
 };
 
 
-static int early_disable;
+static int early_disable = 0;
 static int wdt_io = 0x2e;
 static int cr_wdt_timeout;	/* WDT timeout register */
 static int cr_wdt_control;	/* WDT control register */
@@ -57,15 +58,15 @@ static void superio_outb(int reg, int val)
 {
     printf("%s reg 0x%02x, value 0x%02x\n",__FUNCTION__,reg,val);
     outb(reg, WDT_EFER);
-    usleep(100000);
+    usleep(IOPORT_DELAY);
     outb(val, WDT_EFDR);
-    usleep(100000);
+    usleep(IOPORT_DELAY);
 }
 
 static inline int superio_inb(int reg)
 {
     outb(reg, WDT_EFER);
-    usleep(100000);
+    usleep(IOPORT_DELAY);
     return inb(WDT_EFDR);
 }
 
@@ -75,11 +76,11 @@ static int superio_enter(void)
 	perror("ioperm open");
 	exit(1);
     }
-    printf("%s\n",__FUNCTION__);
+    printf(">>>%s\n",__FUNCTION__);
     outb(0x87, WDT_EFER);	/* Enter extended function mode */
-    usleep(100000);
+    usleep(IOPORT_DELAY);
     outb(0x87, WDT_EFER);	/* Again according to manual */
-    usleep(100000);
+    usleep(IOPORT_DELAY);
 
     return 0;
 }
@@ -92,9 +93,9 @@ static void superio_select(int ld)
 
 static void superio_exit(void)
 {
-    printf("%s\n",__FUNCTION__);
+    printf("<<<%s\n",__FUNCTION__);
     outb(0xAA, WDT_EFER);	/* Leave extended function mode */
-    usleep(100000);
+    usleep(IOPORT_DELAY);
     if (ioperm(wdt_io, 2, 0)) {
 	perror("ioperm close");
 	exit(1);
@@ -120,7 +121,6 @@ static int wdt_set_time(unsigned int timeout)
     return 0;
 }
 
-
 static int wdt_start(struct watchdog_device *wdog)
 {
     printf("%s:%d\n", __FUNCTION__, __LINE__);
@@ -129,19 +129,24 @@ static int wdt_start(struct watchdog_device *wdog)
 
 static int wdt_stop(struct watchdog_device *wdog)
 {
-    printf("%s:%d\n", __FUNCTION__, __LINE__);
+    int ret;
+    unsigned char t;
+
+    ret = superio_enter();
+    if (ret) {
+	printf("%s:%d ret %d\n", __FUNCTION__, __LINE__, ret);
+	return ret;
+    }
+
+    superio_select(W83627HF_LD_WDT);
+    t = superio_inb(cr_wdt_control) & ~0x02; /* disable the WDT#1 output */
+    superio_outb(cr_wdt_control, t);
+    superio_exit();
+
     return wdt_set_time(0);
 }
 
-static int wdt_set_timeout(struct watchdog_device *wdog, unsigned int timeout)
-{
-    printf("%s:%d timeout %d\n", __FUNCTION__, __LINE__, timeout);
-    wdog->timeout = timeout;
-
-    return 0;
-}
-
-static unsigned int wdt_get_time(struct watchdog_device *wdog)
+static unsigned int wdt_get_time(void)
 {
     unsigned int timeleft;
     int ret;
@@ -172,7 +177,7 @@ static int w83627hf_init(struct watchdog_device *wdog)
     
     superio_select(W83627HF_LD_WDT);
 
-    /* set CR30 bit 0 to activate GPIO2 */
+    /* set CR30 bit 0 to activate WDT1 */
     t = superio_inb(0x30);
 
     if (!(t & 0x01))
@@ -195,7 +200,7 @@ static int w83627hf_init(struct watchdog_device *wdog)
 	    printf("Stopping previously enabled watchdog until userland kicks in\n");
 	    superio_outb(cr_wdt_timeout, 0);
 	} else {
-	    printf("Watchdog already running. Resetting timeout to %d sec\n", wdog->timeout);
+	    printf("Watchdog already running(timeout %d). Resetting timeout to %d sec\n", t, wdog->timeout);
 	    superio_outb(cr_wdt_timeout, wdog->timeout);
 	}
     }
@@ -238,13 +243,13 @@ int main(int argc, char *argv[])
     int feed = 0;
     int i;
 
-    if (argc >= 2) {
-        timeout = strtoul(argv[1],NULL,0);    
-    } 
+    if (argc < 3) {
+        printf("Usage: %s <timeout> <feed>\n",argv[0]);
+        return 0;
+    }
 
-    if (argc == 3) {
-        feed = strtoul(argv[2],NULL,0);    
-    } 
+    timeout = strtoul(argv[1],NULL,0);
+    feed = strtoul(argv[2],NULL,0);
 
     /* init watchdog */
     wdt_init();
@@ -257,17 +262,7 @@ int main(int argc, char *argv[])
     }
 
     /* stop watchdog */
-    timeout = 0;
-    printf("set watchdog timeout to %d\n",timeout);
-    wdt_set_time(timeout);
-
-#if 0
-    while(1) {
-        printf(".");
-	sleep(10);
-	fflush(NULL);
-    }
-#endif
+    wdt_stop(&wdt_dev);
 
     return 0;
 }
